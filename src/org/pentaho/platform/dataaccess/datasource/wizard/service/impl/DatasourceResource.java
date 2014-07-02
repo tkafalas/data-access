@@ -41,6 +41,7 @@ import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.StreamingOutput;
@@ -55,7 +56,11 @@ import org.pentaho.metadata.model.LogicalModel;
 import org.pentaho.metadata.repository.IMetadataDomainRepository;
 import org.pentaho.platform.api.engine.IAuthorizationPolicy;
 import org.pentaho.platform.api.repository2.unified.IUnifiedRepository;
+import org.pentaho.platform.api.repository2.unified.RepositoryFile;
 import org.pentaho.platform.dataaccess.datasource.beans.LogicalModelSummary;
+import org.pentaho.platform.dataaccess.datasource.ui.service.DSWUIDatasourceService;
+import org.pentaho.platform.dataaccess.datasource.ui.service.MetadataUIDatasourceService;
+import org.pentaho.platform.dataaccess.datasource.ui.service.MondrianUIDatasourceService;
 import org.pentaho.platform.dataaccess.datasource.wizard.service.DatasourceServiceException;
 import org.pentaho.platform.dataaccess.datasource.wizard.service.gwt.IDSWDatasourceService;
 import org.pentaho.platform.engine.core.system.PentahoSessionHolder;
@@ -64,7 +69,11 @@ import org.pentaho.platform.plugin.action.mondrian.catalog.IMondrianCatalogServi
 import org.pentaho.platform.plugin.action.mondrian.catalog.MondrianCatalog;
 import org.pentaho.platform.plugin.services.importexport.legacy.MondrianCatalogRepositoryHelper;
 import org.pentaho.platform.plugin.services.metadata.IPentahoMetadataDomainRepositoryExporter;
+import org.pentaho.platform.plugin.services.metadata.PentahoMetadataDomainRepository;
 import org.pentaho.platform.repository2.unified.fileio.RepositoryFileInputStream;
+import org.pentaho.platform.repository2.unified.webservices.DefaultUnifiedRepositoryWebService;
+import org.pentaho.platform.repository2.unified.webservices.RepositoryFileAdapter;
+import org.pentaho.platform.repository2.unified.webservices.RepositoryFileDto;
 import org.pentaho.platform.security.policy.rolebased.actions.AdministerSecurityAction;
 import org.pentaho.platform.security.policy.rolebased.actions.RepositoryCreateAction;
 import org.pentaho.platform.security.policy.rolebased.actions.RepositoryReadAction;
@@ -82,6 +91,9 @@ public class DatasourceResource {
   IDSWDatasourceService dswService;
   IModelerService modelerService;
   public static final String METADATA_EXT = ".xmi"; //$NON-NLS-1$
+  protected static DefaultUnifiedRepositoryWebService repoWs;
+  protected RepositoryFileAdapter repositoryFileAdapter = new RepositoryFileAdapter();
+  IUnifiedRepository repo = PentahoSystem.get( IUnifiedRepository.class );
   
   public DatasourceResource() {
     super();
@@ -297,11 +309,61 @@ public class DatasourceResource {
   @GET
   @Path("/{dswId : .+}/getAnalysisDatasourceInfo")
   @Produces(WILDCARD)
-  public Response getAnalysisDatasourceInfo(@PathParam("dswId") String dswId) {
-	MondrianCatalog catalog = mondrianCatalogService.getCatalog(dswId, PentahoSessionHolder.getSession());
-	String parameters = catalog.getDataSourceInfo();
-	return Response.ok().entity(parameters).build();
-  }  
+  public Response getAnalysisDatasourceInfo( @PathParam( "dswId" ) String dswId ) {
+    MondrianCatalog catalog = mondrianCatalogService.getCatalog( dswId, PentahoSessionHolder.getSession() );
+    String parameters = catalog.getDataSourceInfo();
+    return Response.ok().entity( parameters ).build();
+  } 
+  
+  @GET
+  @Path("/{datasourceName : .+}/getRepositoryFileList")
+  @Produces({ APPLICATION_XML, APPLICATION_JSON })
+  public List<RepositoryFileDto> getRepositoryFileList( @PathParam( "datasourceName" ) String datasourceName,
+      @QueryParam( "type" ) String type ) {
+    
+    List<RepositoryFileDto> result = doGetRepositoryFileList( datasourceName, type);
+    return result;
+  }
+  
+  /**
+   * Get a list of all repositoryFile objects that are related to the given datasource name and type.
+   * @param datasourceName
+   * @param type
+   * @return List of RepositoryFileDto Objects
+   */
+  private List<RepositoryFileDto> doGetRepositoryFileList( String datasourceName, String type ) {
+    ArrayList<RepositoryFileDto> fileDtos = new ArrayList<RepositoryFileDto>();
+    if (type.equals( "JDBC" )) {
+      fileDtos.add( repositoryFileAdapter.marshal( repo.getFile( "/etc/pdi/databases/" + datasourceName + ".kdb" ) ) );
+    } else if ( type.equals( MetadataUIDatasourceService.TYPE ) ) {
+      addMetadataFiles( fileDtos, datasourceName);
+    } else if ( type.equals( MondrianUIDatasourceService.TYPE ) ) {
+      addMondrianFiles( fileDtos, datasourceName );
+    } else if ( type.equals( DSWUIDatasourceService.TYPE ) ) {
+      addMetadataFiles( fileDtos, datasourceName + ".xmi");
+      addMondrianFiles( fileDtos, datasourceName );
+    }
+    return fileDtos;
+  }
+  
+  private void addMondrianFiles( List<RepositoryFileDto> fileDtos , String datasourceName ){
+    RepositoryFile repFile = repo.getFile( "/etc/mondrian/" + datasourceName );
+    addToDtoList( fileDtos, repFile );
+  }
+  
+  private void addMetadataFiles( List<RepositoryFileDto> fileDtos , String datasourceName ){
+    Set<RepositoryFile> files =
+        PentahoMetadataDomainRepository.getFiles( repo, datasourceName );
+    for ( RepositoryFile file : files ) {
+      addToDtoList( fileDtos, file );
+    }
+  }
+  
+  private void addToDtoList( List<RepositoryFileDto> dtoList, RepositoryFile repFile ) {
+    if (repFile != null) {
+      dtoList.add( repositoryFileAdapter.marshal( repFile ) );
+    }
+  }
 
   private Response createAttachment(Map<String, InputStream> fileData, String domainId) {
     String quotedFileName = null;
@@ -365,5 +427,12 @@ public class DatasourceResource {
     return policy
         .isAllowed(RepositoryReadAction.NAME) && policy.isAllowed(RepositoryCreateAction.NAME)
         && (policy.isAllowed(AdministerSecurityAction.NAME));
+  }
+  
+  public static DefaultUnifiedRepositoryWebService getRepoWs() {
+    if ( repoWs == null ) {
+      repoWs = new DefaultUnifiedRepositoryWebService();
+    }
+    return repoWs;
   }
 }

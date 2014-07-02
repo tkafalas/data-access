@@ -17,13 +17,24 @@
 
 package org.pentaho.platform.dataaccess.datasource.ui.admindialog;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.pentaho.agilebi.modeler.services.IModelerServiceAsync;
+import org.pentaho.gwt.widgets.client.dialogs.MessageDialogBox;
+import org.pentaho.gwt.widgets.client.filechooser.RepositoryFile;
+import org.pentaho.gwt.widgets.client.tabs.PentahoTabPanel;
+import org.pentaho.gwt.widgets.client.utils.NameUtils;
+import org.pentaho.gwt.widgets.client.utils.i18n.IResourceBundleLoadCallback;
+import org.pentaho.gwt.widgets.client.utils.i18n.ResourceBundle;
 import org.pentaho.metadata.model.Domain;
 import org.pentaho.platform.dataaccess.datasource.DatasourceInfo;
 import org.pentaho.platform.dataaccess.datasource.IDatasourceInfo;
 import org.pentaho.platform.dataaccess.datasource.beans.LogicalModelSummary;
+import org.pentaho.platform.dataaccess.datasource.permissions.FilePropertiesDialog;
+import org.pentaho.platform.dataaccess.datasource.permissions.IRepositoryFileCallback;
+import org.pentaho.platform.dataaccess.datasource.permissions.IRepositoryFileListCallback;
+import org.pentaho.platform.dataaccess.datasource.permissions.messages.Messages;
 import org.pentaho.platform.dataaccess.datasource.ui.service.DSWUIDatasourceService;
 import org.pentaho.platform.dataaccess.datasource.ui.service.IUIDatasourceAdminService;
 import org.pentaho.platform.dataaccess.datasource.ui.service.JdbcDatasourceService;
@@ -53,9 +64,20 @@ import org.pentaho.ui.xul.containers.XulTreeCols;
 import org.pentaho.ui.xul.stereotype.Bindable;
 import org.pentaho.ui.xul.util.AbstractXulDialogController;
 
+import com.google.gwt.core.client.GWT;
+import com.google.gwt.http.client.Request;
+import com.google.gwt.http.client.RequestBuilder;
+import com.google.gwt.http.client.RequestCallback;
+import com.google.gwt.http.client.RequestException;
+import com.google.gwt.http.client.Response;
+import com.google.gwt.json.client.JSONArray;
+import com.google.gwt.json.client.JSONObject;
+import com.google.gwt.json.client.JSONParser;
+import com.google.gwt.json.client.JSONValue;
 import com.google.gwt.user.client.Window;
 
-public class DatasourceAdminDialogController extends AbstractXulDialogController<IDatasourceInfo> implements BindingExceptionHandler{
+public class DatasourceAdminDialogController extends AbstractXulDialogController<IDatasourceInfo> implements
+    BindingExceptionHandler, IResourceBundleLoadCallback {
 
   // ~ Static fields/initializers ======================================================================================
 
@@ -91,6 +113,7 @@ public class DatasourceAdminDialogController extends AbstractXulDialogController
   private GwtDatasourceEditorEntryPoint entryPoint;
   private DialogListener adminDatasourceListener;
   private GwtDatasourceMessages messageBundle;
+  private boolean permissionMessageBundleLoaded;
 
   /**
    * Sets up bindings.
@@ -270,6 +293,8 @@ public class DatasourceAdminDialogController extends AbstractXulDialogController
           openErrorDialog("Error", message + error.getMessage());
         }
       });
+
+      checkPermissionMessageBundle();
   }
   
   private void getDatasourceTypes() {
@@ -495,4 +520,186 @@ public class DatasourceAdminDialogController extends AbstractXulDialogController
   public void setMessageBundle(GwtDatasourceMessages messageBundle) {
     this.messageBundle = messageBundle;
   }
+  
+  @Bindable
+  public void datasourceProperties() {
+    IDatasourceInfo dsInfo = datasourceAdminDialogModel.getSelectedDatasource();
+    String type = dsInfo.getType();
+    
+    
+    //Get a RepositoryFile object for this datasource
+    //RepositoryFile repositoryFile = null;
+
+      getRepositoryFiles( dsInfo.getName(), dsInfo.getType(), new IRepositoryFileListCallback() {
+        @Override
+        public void repositoryFileListResponse( List<RepositoryFile> repositoryFileList ) {
+          if ( repositoryFileList != null && repositoryFileList.size() > 0 ) {
+            initiateFilePropertiesDialog( repositoryFileList.get( 0 ) );
+          }
+        }
+      });
+
+    //Get a RepositoryFile object for this datasource
+/*    RepositoryFile repositoryFile = null;
+    if ( type.equals( "JDBC" ) ) {
+      getRepositoryFile( "/etc/pdi/databases/" + dsInfo.getName() + ".kdb", new IRepositoryFileCallback() {
+        @Override
+        public void repositoryFileReponse( RepositoryFile repositoryFile ) {
+          initiateFilePropertiesDialog( repositoryFile );
+        }
+      });
+      
+    }*/
+  }
+  
+  protected void initiateFilePropertiesDialog( RepositoryFile repositoryFile ) {
+    if ( permissionMessageBundleLoaded ) {
+      if ( repositoryFile != null ) {
+        FilePropertiesDialog dialog = new FilePropertiesDialog( repositoryFile, new PentahoTabPanel(), null, FilePropertiesDialog.Tabs.GENERAL, true );
+        dialog.showTab( FilePropertiesDialog.Tabs.GENERAL ); //PERMISSION
+        dialog.center();
+        dialog.show();
+        dialog.getElement().getStyle().setProperty( "zIndex", "1300" );
+    }   
+//
+//      event.setMessage( e.getMessage() );
+//      EventBusUtil.EVENT_BUS.fireEvent( event );
+
+    }
+  }
+  
+  protected void getRepositoryFiles( final String datasourceName, final String datasourceType,
+      final IRepositoryFileListCallback repositoryFileListCallback ) {
+    String url = GWT.getModuleBaseURL();
+    int indexOfContent = url.indexOf( "content" );
+    if ( indexOfContent > -1 ) {
+      url = url.substring( 0, indexOfContent );
+    }
+    url = url + "plugin/data-access/api/datasource/" + NameUtils.URLEncode( datasourceName ) + "/getRepositoryFileList?type=" + encodeUri( datasourceType ); //$NON-NLS-1$ //$NON-NLS-2$
+    RequestBuilder builder = new RequestBuilder( RequestBuilder.GET, url );
+    builder.setHeader( "Accept", "application/json" );
+    // This header is required to force Internet Explorer to not cache values from the GET response.
+    builder.setHeader( "If-Modified-Since", "01 Jan 1970 00:00:00 GMT" );
+    
+    final StringBuilder outputJsonHolder = new StringBuilder();
+    try {
+      builder.sendRequest( null, new RequestCallback() {
+
+        public void onError( Request request, Throwable exception ) {
+          MessageDialogBox dialogBox =
+              new MessageDialogBox( Messages.getString( "error" ), exception.getLocalizedMessage(), false, false, true ); //$NON-NLS-1$
+          dialogBox.center();
+        }
+
+        public void onResponseReceived( Request request, Response response ) {
+          if ( response.getStatusCode() == Response.SC_OK ) {
+            outputJsonHolder.append( response.getText() );
+            List<RepositoryFile> fileList = new ArrayList<RepositoryFile>();
+
+            JSONValue jsonValue =
+                ( (JSONObject) JSONParser.parseLenient( outputJsonHolder.toString() ) ).get( "repositoryFileDto" );
+            if ( jsonValue != null ) {
+              if ( jsonValue.isArray() != null ) {
+                JSONArray jsonArray = jsonValue.isArray();
+                for ( int i = 0; i < jsonArray.size(); i++ ) {
+                  JSONObject jso = new JSONObject();
+                  jso.put( "repositoryFileDto", jsonArray.get( i ) );
+                  fileList.add( new RepositoryFile( jso ) );
+                }
+              } else {
+                JSONObject jso = new JSONObject();
+                jso.put( "repositoryFileDto", jsonValue );
+                fileList.add(  new RepositoryFile (jso) );
+              }
+            }
+            
+            repositoryFileListCallback.repositoryFileListResponse( fileList );
+          } else {
+            MessageDialogBox dialogBox =
+                new MessageDialogBox(
+                    Messages.getString( "error" ), Messages.getString( "serverErrorColon" ) + " " + response.getStatusCode(), false, false, true ); //$NON-NLS-1$//$NON-NLS-2$//$NON-NLS-3$
+            dialogBox.center();
+          }
+        }
+      } );
+    } catch ( RequestException e ) {
+      MessageDialogBox dialogBox =
+          new MessageDialogBox( Messages.getString( "error" ), e.getLocalizedMessage(), false, false, true ); //$NON-NLS-1$
+      dialogBox.center();
+    }
+  }
+  
+  //Delete this method.  It is what I used when I was returning a single repositoryFile
+  protected void getRepositoryFile( final String path, final IRepositoryFileCallback repositoryFileCallback ) {
+    String contextURL = getAjaxBaseUrl();
+    String url = contextURL + "api/repo/files/" + pathToId( path ) + "/properties"; //$NON-NLS-1$ //$NON-NLS-2$
+    RequestBuilder builder = new RequestBuilder( RequestBuilder.GET, url );
+    builder.setHeader( "Accept", "application/json" );
+    // This header is required to force Internet Explorer to not cache values from the GET response.
+    builder.setHeader( "If-Modified-Since", "01 Jan 1970 00:00:00 GMT" );
+    
+    final StringBuilder outputJsonHolder = new StringBuilder();
+    try {
+      builder.sendRequest( null, new RequestCallback() {
+
+        public void onError( Request request, Throwable exception ) {
+          MessageDialogBox dialogBox =
+              new MessageDialogBox( Messages.getString( "error" ), exception.getLocalizedMessage(), false, false, true ); //$NON-NLS-1$
+          dialogBox.center();
+        }
+
+        public void onResponseReceived( Request request, Response response ) {
+          if ( response.getStatusCode() == Response.SC_OK ) {
+            outputJsonHolder.append( response.getText() );
+            JSONObject jsonObject = new JSONObject();
+            jsonObject.put( "repositoryFileDto", (JSONObject) JSONParser.parseLenient( outputJsonHolder.toString() ) );
+            RepositoryFile repositoryFile = new RepositoryFile( jsonObject );
+            repositoryFileCallback.repositoryFileReponse( repositoryFile );
+          } else {
+            MessageDialogBox dialogBox =
+                new MessageDialogBox(
+                    Messages.getString( "error" ), Messages.getString( "serverErrorColon" ) + " " + response.getStatusCode(), false, false, true ); //$NON-NLS-1$//$NON-NLS-2$//$NON-NLS-3$
+            dialogBox.center();
+          }
+        }
+      } );
+    } catch ( RequestException e ) {
+      MessageDialogBox dialogBox =
+          new MessageDialogBox( Messages.getString( "error" ), e.getLocalizedMessage(), false, false, true ); //$NON-NLS-1$
+      dialogBox.center();
+    }
+  }
+
+  @SuppressWarnings( "nls" )
+  public static String pathToId( String path ) {
+    String id = NameUtils.encodeRepositoryPath( path );
+    return NameUtils.URLEncode( id );
+  }
+  
+  public static native String getAjaxBaseUrl()
+  /*-{
+     return $wnd.location.protocol + '//' + $wnd.location.host + $wnd.CONTEXT_PATH;
+  }-*/;
+  
+  private void checkPermissionMessageBundle() {
+    if ( !permissionMessageBundleLoaded ) {
+      String moduleBaseURL = GWT.getModuleBaseURL();
+      String moduleName = "data-access";
+      String contextURL = moduleBaseURL.substring( 0, moduleBaseURL.lastIndexOf( moduleName ) + moduleName.length() ) + "/";
+      ResourceBundle permissionsMessageBundle = new ResourceBundle();
+      Messages.setResourceBundle( permissionsMessageBundle );
+      permissionsMessageBundle.loadBundle( contextURL + "resources/messages/", "Messages", true, DatasourceAdminDialogController.this ); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+  }
+  
+  @Override
+  public void bundleLoaded( String bundleName ) {
+    permissionMessageBundleLoaded = true;
+    
+  }
+  
+  private static final native String encodeUri( String URI )
+  /*-{
+      return encodeURIComponent(URI);
+  }-*/;
 }
